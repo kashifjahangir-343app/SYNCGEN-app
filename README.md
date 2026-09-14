@@ -1,46 +1,88 @@
-# SyncGen — Deployment Guide
+# SYNCGEN MQTT/backend foundation
 
-This folder is your complete SyncGen app, ready to publish.
+This package is the first server-side milestone for SYNCGEN. It receives normalized MQTT telemetry from a Weintek MT8102iE, validates it, writes it to PostgreSQL/TimescaleDB, and broadcasts accepted values to browsers over WebSocket.
 
-## EASIEST WAY TO GO LIVE (recommended for beginners): Netlify Drop
+It is **read-only**. It contains no cloud control path for BESS, generators, or breakers.
 
-You do NOT need to install anything or use a terminal.
+## Included
 
-1. Go to  https://app.netlify.com/drop  (make a free account if asked)
-2. On your computer, this project must first be turned into website files.
-   Because that "build" step needs a developer tool, the simplest path is:
-   - Go to  https://github.com  and make a free account
-   - Create a new repository, upload this whole folder to it
-   - Go to  https://vercel.com , sign in with GitHub, click "New Project",
-     pick this repository, click "Deploy". Vercel builds it automatically.
-   - In ~2 minutes you get a live link like  syncgen.vercel.app
-3. That link is your live demo. Send it to clients.
+- EMQX broker container
+- PostgreSQL + TimescaleDB historian
+- Node.js/TypeScript ingestion API
+- Strict `syncgen.v1` payload validation
+- Rejected-message log
+- Gateway last-value/status table
+- WebSocket endpoint at `/ws`
+- Health endpoint at `/health`
+- Gateway snapshot endpoint at `/api/v1/gateways`
+- Five-second test publisher
+- Unit tests for topics and payloads
 
-## ALTERNATIVE: Hostinger (uses hosting you already pay for)
+## Repository placement
 
-Hostinger needs the app built into plain files first. Two options:
+Upload this folder at the root of the `codex/mqtt--foundation` branch. It is deliberately separate from the existing frontend files. Do not upload it to `main`.
 
-A) If you have Hostinger BUSINESS or CLOUD plan:
-   - hPanel has a "Node.js" / "Web Apps" deploy feature that builds from GitHub.
-   - Connect the GitHub repo from above; Hostinger builds and hosts it.
+## Local commissioning sequence
 
-B) If you have SHARED (Premium) plan:
-   - The app must be built elsewhere first (Vercel/Netlify do this), then the
-     finished files uploaded to hPanel > File Manager > public_html.
-   - Also upload the contents of public_htaccess.txt as a file named ".htaccess"
-     into public_html (this fixes page navigation).
+1. Copy `.env.example` to `.env`.
+2. Replace every `CHANGE_ME` value with a strong development-only password.
+3. Run `docker compose up -d emqx timescaledb`.
+4. Open the local EMQX dashboard at `http://localhost:18083`.
+5. Create two built-in-database MQTT users:
+   - `syncgen_ingestor` for the backend subscriber.
+   - `SITE001_HMI001` for the test publisher/HMI.
+6. Configure authorization so:
+   - `SITE001_HMI001` can publish only `syncgen/v1/JME/SITE001/HMI001/telemetry`.
+   - `syncgen_ingestor` can subscribe only `syncgen/v1/+/+/+/telemetry`.
+7. Put the matching `syncgen_ingestor` password into `.env`.
+8. Run `docker compose up -d --build api`.
+9. Check `http://localhost:8080/health`.
+10. Set `MQTT_SIMULATOR_PASSWORD` in your shell to the simulator account password and run `npm run simulate`.
+11. Open `ws://localhost:8080/ws` using a WebSocket client and confirm a telemetry envelope arrives every five seconds.
+12. Check `http://localhost:8080/api/v1/gateways` for `JME / SITE001 / HMI001`.
 
-## TURNING ON THE AI BOT (later, needs a developer)
+## Production gates
 
-The AI analyst shows a friendly "demo mode" note until you connect a backend.
-A developer creates a tiny server that holds your Anthropic API key, then pastes
-that server's URL into index.html where it says  window.SYNCGEN_AI_BACKEND = "";
+Do not expose the included local ports directly to the internet. Before connecting an installed HMI:
 
-NEVER put your Anthropic API key directly in the website files — it would be
-visible to anyone and could be stolen.
+- use a VPS firewall;
+- terminate HTTPS/WSS through a reverse proxy;
+- enable MQTT over TLS on port 8883;
+- issue unique credentials per HMI;
+- configure topic ACLs;
+- replace every development password;
+- pin and review container versions;
+- configure backups and retention;
+- add authentication/RBAC to HTTP and WebSocket access;
+- complete an HMI-to-broker FAT using a test project before changing a production HMI.
 
-## CONNECTING REAL PLANT DATA (later, needs a developer)
+## Frontend handoff
 
-The demo uses simulated numbers. To show real plants, a developer builds a
-backend service that subscribes to your MQTT broker and feeds live tag values
-into the app. This is the main "Phase 2" engineering work.
+The existing React app should eventually consume:
+
+```text
+ws://localhost:8080/ws
+```
+
+Each message has this envelope:
+
+```json
+{
+  "type": "telemetry",
+  "customerId": "JME",
+  "siteId": "SITE001",
+  "gatewayId": "HMI001",
+  "receivedAt": "2026-09-14T04:30:05.000Z",
+  "status": "GOOD",
+  "payload": {
+    "schema": "syncgen.v1",
+    "timestamp": "2026-09-14T09:30:00+05:00",
+    "sequence": 1,
+    "quality": "good",
+    "metrics": { "grid.power_kw": 48.6 }
+  }
+}
+```
+
+The simulator must remain clearly labeled and must never be presented as a live plant or live MQTT connection.
+
